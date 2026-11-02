@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FastAPI GenAI Service - System Design</title>
+<style>
+  :root{
+    --bg:#f6f7fb; --card:#fff; --ink:#1c2230; --muted:#5b6478; --line:#dfe3ee;
+    --client:#2563eb; --api:#059669; --logic:#d97706; --hf:#7c3aed; --hw:#dc2626;
+    --code:#0f172a; --codeink:#e2e8f0;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  header{background:#0f172a;color:#fff;padding:40px 24px}
+  header .w, main{max-width:1000px;margin:0 auto}
+  header h1{margin:0 0 8px;font-size:2rem}
+  header p{margin:0;color:#cbd5e1}
+  main{padding:24px}
+  section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:24px;margin:20px 0}
+  h2{margin-top:0;font-size:1.4rem;border-bottom:2px solid var(--line);padding-bottom:8px}
+  h3{margin-bottom:6px}
+  code{background:#eef1f8;padding:1px 6px;border-radius:4px;font-size:.9em}
+  pre{background:var(--code);color:var(--codeink);padding:16px;border-radius:8px;overflow-x:auto;font-size:.85rem;line-height:1.5}
+  pre code{background:none;padding:0;color:inherit}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:.95rem}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f0f2f8}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+  .comp{border-left:5px solid var(--line);background:#fafbfe;padding:12px 16px;border-radius:6px}
+  .comp h3{margin:0 0 4px}
+  .c-client{border-color:var(--client)} .c-api{border-color:var(--api)} .c-logic{border-color:var(--logic)}
+  .c-hf{border-color:var(--hf)} .c-hw{border-color:var(--hw)}
+  .note{background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:12px 16px;margin:12px 0}
+  .good{background:#ecfdf5;border-color:#a7f3d0}
+  .steps{counter-reset:s;list-style:none;padding:0}
+  .steps li{counter-increment:s;position:relative;padding:10px 12px 10px 52px;margin:8px 0;background:#fafbfe;border:1px solid var(--line);border-radius:8px}
+  .steps li::before{content:counter(s);position:absolute;left:12px;top:10px;width:28px;height:28px;border-radius:50%;background:var(--client);color:#fff;text-align:center;line-height:28px;font-weight:700;font-size:.9rem}
+  .diagram{overflow-x:auto}
+  svg text{font-family:system-ui,sans-serif}
+  .tag{display:inline-block;font-size:.75rem;padding:1px 8px;border-radius:99px;color:#fff;margin-right:4px}
+  @media (max-width:600px){header{padding:28px 16px}main{padding:16px}section{padding:16px}}
+</style>
+</head>
+<body>
+<header><div class="w">
+  <h1>FastAPI GenAI Service - System Design</h1>
+  <p>How a prompt travels from the client to a TinyLlama model and back as a response. Current state: "Act 1 (naive)" - model is loaded on every request.</p>
+</div></header>
+
+<main>
+
+<section>
+  <h2>1. What this project is</h2>
+  <p>A small web service that exposes one HTTP endpoint. A client sends a text <strong>prompt</strong>; the service runs it through a local open-source language model (<code>TinyLlama/TinyLlama-1.1B-Chat-v1.0</code> from Hugging Face) acting as a "friendly tutor for school students", and returns the generated answer.</p>
+  <table>
+    <tr><th>File</th><th>Role</th></tr>
+    <tr><td><code>main.py</code></td><td>The web layer. Creates the FastAPI app and defines the <code>/generate/text</code> endpoint (the "controller").</td></tr>
+    <tr><td><code>models.py</code></td><td>The AI layer. Knows how to load the model and how to turn a prompt into generated text.</td></tr>
+    <tr><td><code>genaiservice/</code></td><td>The Python virtual environment holding fastapi, uvicorn, torch, transformers, etc. Not application code.</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>2. High-level architecture</h2>
+  <p>Five layers, from outside to inside. Colors match the component cards below.</p>
+  <div class="diagram">
+  <svg viewBox="0 0 960 330" width="100%" role="img" aria-label="Architecture diagram: Client to Uvicorn to FastAPI to models.py to Hugging Face pipeline to CPU/GPU">
+    <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker></defs>
+    <rect x="10" y="110" width="140" height="90" rx="10" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+    <text x="80" y="148" text-anchor="middle" font-weight="700" fill="#1e3a8a">Client</text>
+    <text x="80" y="168" text-anchor="middle" font-size="12" fill="#1e3a8a">browser / curl /</text>
+    <text x="80" y="184" text-anchor="middle" font-size="12" fill="#1e3a8a">Swagger UI</text>
+
+    <rect x="190" y="110" width="140" height="90" rx="10" fill="#d1fae5" stroke="#059669" stroke-width="2"/>
+    <text x="260" y="148" text-anchor="middle" font-weight="700" fill="#064e3b">Uvicorn</text>
+    <text x="260" y="168" text-anchor="middle" font-size="12" fill="#064e3b">ASGI web server</text>
+    <text x="260" y="184" text-anchor="middle" font-size="12" fill="#064e3b">(HTTP in/out)</text>
+
+    <rect x="370" y="110" width="150" height="90" rx="10" fill="#d1fae5" stroke="#059669" stroke-width="2"/>
+    <text x="445" y="142" text-anchor="middle" font-weight="700" fill="#064e3b">FastAPI app</text>
+    <text x="445" y="162" text-anchor="middle" font-size="12" fill="#064e3b">main.py</text>
+    <text x="445" y="178" text-anchor="middle" font-size="12" fill="#064e3b">GET /generate/text</text>
+
+    <rect x="560" y="110" width="150" height="90" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+    <text x="635" y="142" text-anchor="middle" font-weight="700" fill="#78350f">models.py</text>
+    <text x="635" y="162" text-anchor="middle" font-size="12" fill="#78350f">load_text_model()</text>
+    <text x="635" y="178" text-anchor="middle" font-size="12" fill="#78350f">generate_text()</text>
+
+    <rect x="750" y="30" width="200" height="90" rx="10" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+    <text x="850" y="62" text-anchor="middle" font-weight="700" fill="#4c1d95">HF transformers</text>
+    <text x="850" y="82" text-anchor="middle" font-size="12" fill="#4c1d95">pipeline + tokenizer</text>
+    <text x="850" y="98" text-anchor="middle" font-size="12" fill="#4c1d95">TinyLlama weights</text>
+
+    <rect x="750" y="190" width="200" height="90" rx="10" fill="#fee2e2" stroke="#dc2626" stroke-width="2"/>
+    <text x="850" y="222" text-anchor="middle" font-weight="700" fill="#7f1d1d">PyTorch + device</text>
+    <text x="850" y="242" text-anchor="middle" font-size="12" fill="#7f1d1d">CUDA GPU (bfloat16)</text>
+    <text x="850" y="258" text-anchor="middle" font-size="12" fill="#7f1d1d">or CPU (float32)</text>
+
+    <line x1="150" y1="155" x2="188" y2="155" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+    <line x1="330" y1="155" x2="368" y2="155" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+    <line x1="520" y1="155" x2="558" y2="155" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+    <line x1="710" y1="140" x2="748" y2="95" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+    <line x1="850" y1="120" x2="850" y2="188" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+    <text x="160" y="300" font-size="13" fill="#475569">Request flows left to right; the response travels back the same path in reverse.</text>
+  </svg>
+  </div>
+</section>
+
+<section>
+  <h2>3. Components and what each one does</h2>
+  <div class="grid">
+    <div class="comp c-client"><h3>Client</h3>
+      Anything that can send an HTTP GET: a browser, <code>curl</code>, Postman, or FastAPI's built-in docs page at <code>/docs</code>. It supplies the <code>prompt</code> (and optionally <code>temperature</code>) as URL query parameters and receives the answer as JSON.</div>
+    <div class="comp c-api"><h3>Uvicorn</h3>
+      The ASGI server process. It listens on a port (default 8000), parses raw HTTP, and hands the request to FastAPI. With <code>--reload</code> it also watches files and restarts on change.</div>
+    <div class="comp c-api"><h3>FastAPI app (<code>main.py</code>)</h3>
+      Routes <code>GET /generate/text</code> to the handler function <code>serve_language_model_controller</code>. FastAPI automatically reads <code>prompt</code> (required string) and <code>temperature</code> (float, default 0.7) from the query string, validates their types, and converts the returned value to a JSON response.</div>
+    <div class="comp c-logic"><h3>Handler function</h3>
+      The "controller". It orchestrates: start a timer, call <code>load_text_model()</code>, call <code>generate_text(...)</code>, print timings, return the text. It contains no AI logic itself.</div>
+    <div class="comp c-logic"><h3><code>load_text_model()</code></h3>
+      Builds a Hugging Face <code>pipeline("text-generation")</code> for TinyLlama: downloads weights on first use (cached afterwards in <code>~/.cache/huggingface</code>), reads them into memory, and places them on the GPU or CPU.</div>
+    <div class="comp c-logic"><h3><code>generate_text()</code></h3>
+      Wraps the user prompt with a fixed system prompt, formats it using the model's chat template, runs generation (max 128 new tokens, sampling with top-k 50, top-p 0.95), and returns only the newly generated text.</div>
+    <div class="comp c-hf"><h3>Hugging Face pipeline / tokenizer</h3>
+      The tokenizer converts text to token IDs and back. The pipeline runs the tokens through the model repeatedly, producing one token at a time until it stops or hits the 128-token limit.</div>
+    <div class="comp c-hw"><h3>PyTorch and hardware</h3>
+      <code>models.py</code> picks <code>cuda</code> if a GPU is available, otherwise <code>cpu</code>. Dtype is bfloat16 on GPU (less memory, faster) and float32 on CPU (bfloat16 is poorly supported there). All the matrix math runs here.</div>
+  </div>
+</section>
+
+<section>
+  <h2>4. Where the prompt is received and how the response is produced</h2>
+  <p>Example request: <code>GET http://localhost:8000/generate/text?prompt=What is gravity?&amp;temperature=0.7</code></p>
+  <ol class="steps">
+    <li><strong>Client sends the request.</strong> The prompt travels in the URL query string: <code>prompt="What is gravity?"</code>, <code>temperature=0.7</code>.</li>
+    <li><strong>Uvicorn receives it</strong> on its TCP port, parses the HTTP request, and passes it into the FastAPI application.</li>
+    <li><strong>FastAPI routes it.</strong> The path <code>/generate/text</code> with method GET matches the decorator on line 9 of <code>main.py</code>. The query parameters are bound to the function arguments <code>prompt</code> and <code>temperature</code> (this is the exact point where the prompt enters your code). Because the handler is a plain <code>def</code>, FastAPI runs it in a worker thread so the server stays responsive.</li>
+    <li><strong>Model loading (slow step).</strong> The handler calls <code>load_text_model()</code>. A new pipeline is built: weights are read from the disk cache into RAM/VRAM. This repeats on every request.</li>
+    <li><strong>Prompt assembly.</strong> <code>generate_text()</code> builds a two-message list (the fixed system prompt plus the user prompt) and calls <code>tokenizer.apply_chat_template(...)</code>. That produces the exact special-token-formatted string TinyLlama was trained on, ending with an "assistant's turn" marker.</li>
+    <li><strong>Tokenization and inference.</strong> The pipeline tokenizes the string, then loops: the model predicts a probability distribution over the next token, one token is sampled (using temperature, top-k, top-p), appended, and fed back in. This repeats until an end token or 128 new tokens.</li>
+    <li><strong>Decoding.</strong> Token IDs are converted back to text. <code>return_full_text=False</code> drops the input so only the answer remains; <code>.strip()</code> trims whitespace.</li>
+    <li><strong>Return path.</strong> The handler prints a timing line to the server console and returns the string. FastAPI serializes it to JSON, Uvicorn sends the HTTP 200 response, and the client sees the answer.</li>
+  </ol>
+
+  <h3>Sequence diagram</h3>
+  <div class="diagram">
+  <svg viewBox="0 0 960 470" width="100%" role="img" aria-label="Sequence diagram of a request">
+    <defs><marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#334155"/></marker></defs>
+    <g font-weight="700" font-size="13" text-anchor="middle">
+      <rect x="20" y="10" width="120" height="34" rx="6" fill="#dbeafe" stroke="#2563eb"/><text x="80" y="32" fill="#1e3a8a">Client</text>
+      <rect x="210" y="10" width="120" height="34" rx="6" fill="#d1fae5" stroke="#059669"/><text x="270" y="32" fill="#064e3b">Uvicorn</text>
+      <rect x="400" y="10" width="120" height="34" rx="6" fill="#d1fae5" stroke="#059669"/><text x="460" y="32" fill="#064e3b">FastAPI handler</text>
+      <rect x="590" y="10" width="120" height="34" rx="6" fill="#fef3c7" stroke="#d97706"/><text x="650" y="32" fill="#78350f">models.py</text>
+      <rect x="780" y="10" width="150" height="34" rx="6" fill="#ede9fe" stroke="#7c3aed"/><text x="855" y="32" fill="#4c1d95">HF pipeline + model</text>
+    </g>
+    <g stroke="#94a3b8" stroke-dasharray="4 4">
+      <line x1="80" y1="44" x2="80" y2="455"/><line x1="270" y1="44" x2="270" y2="455"/>
+      <line x1="460" y1="44" x2="460" y2="455"/><line x1="650" y1="44" x2="650" y2="455"/><line x1="855" y1="44" x2="855" y2="455"/>
+    </g>
+    <g stroke="#334155" stroke-width="1.8" marker-end="url(#b)" fill="none">
+      <line x1="80" y1="80" x2="268" y2="80"/>
+      <line x1="270" y1="110" x2="458" y2="110"/>
+      <line x1="460" y1="150" x2="648" y2="150"/>
+      <line x1="650" y1="180" x2="853" y2="180"/>
+      <line x1="855" y1="210" x2="652" y2="210"/>
+      <line x1="460" y1="250" x2="648" y2="250"/>
+      <line x1="650" y1="290" x2="853" y2="290"/>
+      <line x1="855" y1="350" x2="652" y2="350"/>
+      <line x1="650" y1="380" x2="462" y2="380"/>
+      <line x1="460" y1="410" x2="272" y2="410"/>
+      <line x1="270" y1="440" x2="82" y2="440"/>
+    </g>
+    <g font-size="12" fill="#1c2230">
+      <text x="90" y="72">GET /generate/text?prompt=...</text>
+      <text x="280" y="102">forward request</text>
+      <text x="470" y="142">load_text_model()</text>
+      <text x="660" y="172">build pipeline, read weights</text>
+      <text x="660" y="202">pipeline object</text>
+      <text x="470" y="242">generate_text(pipe, prompt, temp)</text>
+      <text x="660" y="282">chat template + tokenize + sample tokens</text>
+      <text x="660" y="342">generated text</text>
+      <text x="472" y="372">answer string</text>
+      <text x="282" y="402">JSON response</text>
+      <text x="92" y="432">HTTP 200 + answer</text>
+    </g>
+    <rect x="860" y="195" width="90" height="30" fill="none"/>
+    <text x="500" y="226" font-size="11" fill="#dc2626" font-weight="700">SLOW: repeated on every request</text>
+    <text x="870" y="320" font-size="11" fill="#475569">token-by-token</text>
+    <text x="870" y="334" font-size="11" fill="#475569">loop (up to 128)</text>
+  </svg>
+  </div>
+</section>
+
+<section>
+  <h2>5. Inside <code>generate_text()</code>: how the prompt becomes an answer</h2>
+  <pre><code>User prompt: "What is gravity?"
+        |
+        v
+messages = [ {system: "You are a friendly tutor ..."},
+             {user:   "What is gravity?"} ]
+        |  tokenizer.apply_chat_template(add_generation_prompt=True)
+        v
+"&lt;|system|&gt; You are a friendly tutor ... &lt;/s&gt;
+ &lt;|user|&gt;   What is gravity? &lt;/s&gt;
+ &lt;|assistant|&gt;"                      &lt;-- model continues from here
+        |  pipe(..., max_new_tokens=128, do_sample=True,
+        |        temperature, top_k=50, top_p=0.95)
+        v
+"Gravity is the force that pulls things toward each other ..."
+        |  return_full_text=False  +  .strip()
+        v
+returned to the client as JSON</code></pre>
+  <table>
+    <tr><th>Parameter</th><th>Meaning</th></tr>
+    <tr><td><code>temperature</code></td><td>Randomness. Low = predictable, high = creative. Set by the client (default 0.7).</td></tr>
+    <tr><td><code>top_k=50</code></td><td>Only the 50 most likely next tokens are considered.</td></tr>
+    <tr><td><code>top_p=0.95</code></td><td>Only the smallest set of tokens covering 95% probability is considered.</td></tr>
+    <tr><td><code>max_new_tokens=128</code></td><td>Hard cap on answer length (keeps responses short and bounds latency).</td></tr>
+    <tr><td><code>do_sample=True</code></td><td>Sample from the distribution instead of always picking the top token, so answers vary between calls.</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>6. Runtime and deployment view</h2>
+  <table>
+    <tr><th>Aspect</th><th>Current design</th></tr>
+    <tr><td>Process model</td><td>One Uvicorn process running one FastAPI app (started with something like <code>uvicorn main:app --reload</code>).</td></tr>
+    <tr><td>State</td><td>None. The service is stateless: each request is independent and nothing is stored between calls (no chat history, no database).</td></tr>
+    <tr><td>Model storage</td><td>Weights are downloaded once from the Hugging Face Hub into the local cache, then read from disk.</td></tr>
+    <tr><td>Compute</td><td>Local GPU if CUDA is available, else CPU. No external API calls at request time.</td></tr>
+    <tr><td>Auth / rate limiting</td><td>None. Anyone who can reach the port can run inference.</td></tr>
+    <tr><td>Observability</td><td>Only a <code>print()</code> of model-load time and total time per request.</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>7. The key design weakness in this version ("Act 1")</h2>
+  <div class="note">
+    <strong>The model is loaded inside the request handler.</strong> Every call to <code>/generate/text</code> re-creates the pipeline and re-reads ~1.1B parameters into memory before generating anything. The printed log line <code>[act1] model load: Xs, total: Ys</code> exists to show you that the load time dominates the total.
+  </div>
+  <ul>
+    <li><strong>Latency:</strong> seconds of loading before any token is generated.</li>
+    <li><strong>Memory:</strong> concurrent requests each load their own copy, risking out-of-memory errors.</li>
+    <li><strong>Wasted work:</strong> the weights never change, so loading them repeatedly is pure overhead.</li>
+  </ul>
+
+  <h3>Target design ("Act 2" - load once)</h3>
+  <div class="note good">
+    Load the pipeline <strong>once at application startup</strong> (FastAPI <code>lifespan</code> event, stored on <code>app.state</code>, or a module-level variable). The handler then only calls <code>generate_text(pipe, ...)</code>.
+  </div>
+  <pre><code>BEFORE (now)                               AFTER (recommended)
+------------                               -------------------
+request -> load model (slow)               startup  -> load model ONCE (slow)
+        -> generate                        request  -> generate (fast)
+request -> load model (slow) again         request  -> generate (fast)
+        -> generate                        request  -> generate (fast)</code></pre>
+</section>
+
+<section>
+  <h2>8. Other design considerations</h2>
+  <ul>
+    <li><strong>Concurrency:</strong> even with a single loaded model, concurrent generations compete for the same GPU/CPU. A lock, queue, or batching layer may be needed under load.</li>
+    <li><strong>Input validation:</strong> <code>temperature</code> should be bounded (e.g. greater than 0, at most 2); invalid values currently surface as HTTP 500.</li>
+    <li><strong>HTTP method:</strong> a <code>POST</code> with a JSON body suits long prompts better than <code>GET</code> query strings.</li>
+    <li><strong>Streaming:</strong> returning tokens as they are generated (Server-Sent Events) would improve perceived latency.</li>
+    <li><strong>Security:</strong> add authentication and rate limiting before exposing the service publicly.</li>
+    <li><strong>Dev tooling:</strong> exclude the <code>genaiservice</code> venv from <code>--reload</code> watching so installs don't restart the server.</li>
+  </ul>
+</section>
+
+</main>
+</body>
+</html>

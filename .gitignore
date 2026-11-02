@@ -1,0 +1,10 @@
+# Virtual environment
+genaiservice/
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+# VS Code
+.vscode/
+# Environment variables (keep API keys safe)
+.env
