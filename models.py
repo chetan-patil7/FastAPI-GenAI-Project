@@ -1,48 +1,61 @@
-# models.py - Act 1: load a Hugging Face model and generate text
-import torch
-from transformers import Pipeline, pipeline
+# models.py - Gemini API version
+import os
+import time
+from google import genai
+from google.genai import types
 
-MODEL_ID = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+MODEL = "gemini-3.8-flash"
+MAX_RETRIES = 3  # retry on 503 overload errors
 
 SYSTEM_PROMPT = (
     "You are a friendly tutor for school students. "
     "Explain simply, in short answers, and use markdown."
 )
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# bfloat16 only makes sense on GPU; use float32 on CPU
-dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
 
-
-def load_text_model() -> Pipeline:
-    return pipeline(
-        "text-generation",
-        model=MODEL_ID,
-        torch_dtype=dtype,
-        device=device,
-    )
+def load_text_model():
+    """Initialize and return the Gemini client (replaces local pipeline)."""
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "GEMINI_API_KEY environment variable is not set. "
+            "Create a .env file with: GEMINI_API_KEY=your_key_here"
+        )
+    client = genai.Client(api_key=api_key)
+    return client
 
 
 def generate_text(
-    pipe: Pipeline,
+    pipe,                        # Gemini client (was: HuggingFace Pipeline)
     prompt: str,
     temperature: float = 0.7,
-    max_new_tokens: int = 128,
+    max_new_tokens: int = 512,
 ) -> str:
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": prompt},
-    ]
-    chat_prompt = pipe.tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
-    out = pipe(
-        chat_prompt,
-        max_new_tokens=max_new_tokens,
-        do_sample=True,
-        temperature=temperature,
-        top_k=50,
-        top_p=0.95,
-        return_full_text=False,  # return only the new text, not the whole chat
-    )
-    return out[0]["generated_text"].strip()
+    """Generate text using the Gemini API with retry on 503 overload."""
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            print(f"[gemini] Attempt {attempt}/{MAX_RETRIES} with model: {MODEL}")
+            response = pipe.models.generate_content(
+                model=MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=temperature,
+                    max_output_tokens=max_new_tokens,
+                ),
+            )
+            print(f"[gemini] Success on attempt {attempt}")
+            return response.text.strip()
+
+        except Exception as e:
+            error_str = str(e)
+            is_overloaded = "503" in error_str or "UNAVAILABLE" in error_str
+            is_rate_limited = "429" in error_str
+
+            if (is_overloaded or is_rate_limited) and attempt < MAX_RETRIES:
+                wait = 2 ** (attempt - 1)  # 1s, 2s, 4s
+                print(f"[gemini] Overloaded (attempt {attempt}), retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                print(f"[ERROR] {type(e).__name__}: {e}")
+                raise

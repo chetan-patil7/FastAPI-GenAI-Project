@@ -1,7 +1,7 @@
 
 fastapi
 uvicorn
-transformers
-torch
 streamlit
 requests
+google-genai
+python-dotenv
